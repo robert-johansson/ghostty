@@ -414,6 +414,7 @@ pub const Surface = struct {
     size: apprt.SurfaceSize,
     cursor_pos: apprt.CursorPos,
     inspector: ?*Inspector = null,
+    options: Options = .{},
 
     /// The current title of the surface. The embedded apprt saves this so
     /// that getTitle works without the implementer needing to save it.
@@ -460,7 +461,16 @@ pub const Surface = struct {
 
         /// Context for the new surface
         context: apprt.surface.NewSurfaceContext = .window,
+
+        /// iOS Manual backend: callback for forwarding processed terminal
+        /// input to the host application (e.g., to write to Bun's stdin).
+        write_cb: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void = null,
+        write_cb_userdata: ?*anyopaque = null,
     };
+
+    pub fn getOptions(self: *const Surface) Options {
+        return self.options;
+    }
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
         self.* = .{
@@ -474,6 +484,7 @@ pub const Surface = struct {
             },
             .size = .{ .width = 800, .height = 600 },
             .cursor_pos = .{ .x = -1, .y = -1 },
+            .options = opts,
         };
 
         // Add ourselves to the list of surfaces on the app.
@@ -1687,6 +1698,48 @@ pub const CAPI = struct {
     /// Tell the surface that it needs to schedule a render
     /// call as soon as possible (NOW if possible).
     export fn ghostty_surface_draw(surface: *Surface) void {
+        surface.draw();
+    }
+
+    /// Update cells from terminal state AND draw in one call.
+    /// Needed on iOS where the render/IO threads' event loops (xev)
+    /// may not function. This does everything from the caller's thread:
+    /// 1. Sync terminal grid size with surface size (IO thread bypass)
+    /// 2. Rebuild GPU cells from terminal state (render thread bypass)
+    /// 3. Draw the frame via Metal
+    export fn ghostty_surface_update_and_draw(surface: *Surface) void {
+        // Ensure terminal grid matches surface size.
+        // Normally the IO thread processes resize messages, but on iOS
+        // the IO thread's xev loop may not run.
+        const size = surface.core_surface.size;
+        const grid_size = size.grid();
+        const io = &surface.core_surface.io;
+        const term_cols = io.terminal.cols;
+        const term_rows = io.terminal.rows;
+        if (term_cols != grid_size.columns or term_rows != grid_size.rows) {
+            io.size = size;
+            io.backend.resize(grid_size, size.terminal()) catch {};
+            {
+                surface.core_surface.renderer_state.mutex.lock();
+                defer surface.core_surface.renderer_state.mutex.unlock();
+                io.terminal.resize(
+                    io.alloc,
+                    grid_size.columns,
+                    grid_size.rows,
+                ) catch |err| {
+                    log.warn("error resizing terminal err={}", .{err});
+                };
+                io.terminal.width_px = grid_size.columns * size.cell.width;
+                io.terminal.height_px = grid_size.rows * size.cell.height;
+            }
+        }
+
+        surface.core_surface.renderer.updateFrame(
+            &surface.core_surface.renderer_state,
+            true,
+        ) catch |err| {
+            log.warn("error in updateFrame err={}", .{err});
+        };
         surface.draw();
     }
 

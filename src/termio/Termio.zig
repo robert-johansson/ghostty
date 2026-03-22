@@ -668,7 +668,10 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
 /// Process output from readdata but the lock is already held.
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
     // Schedule a render. We can call this first because we have the lock.
-    self.terminal_stream.handler.queueRender() catch unreachable;
+    // On iOS the render thread doesn't drain mach port notifications,
+    // so notify() eventually fails when the port queue is full.
+    // Using catch {} instead of catch unreachable to avoid UB.
+    self.terminal_stream.handler.queueRender() catch {};
 
     // Whenever a character is typed, we ensure the cursor is in the
     // non-blink state so it is rendered if visible. If we're under

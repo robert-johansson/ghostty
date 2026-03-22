@@ -1,6 +1,10 @@
 //! Manual termio backend. This provides a terminal surface that accepts
 //! input/output programmatically rather than through a PTY/subprocess.
 //! This is used on platforms like iOS where PTYs are not available.
+//!
+//! The host application provides a write callback to receive processed
+//! terminal input (from ghostty_surface_text/key). Output is fed via
+//! ghostty_surface_write_output().
 const Manual = @This();
 
 const std = @import("std");
@@ -13,20 +17,32 @@ const termio = @import("../termio.zig");
 
 const log = std.log.scoped(.io_manual);
 
+/// Callback for forwarding processed terminal input to the host application.
+/// Called when Ghostty processes keyboard input (via ghostty_surface_text/key)
+/// and the terminal needs to send data to the "child process" (Bun in our case).
+pub const WriteFn = *const fn (userdata: ?*anyopaque, data: [*]const u8, len: usize) callconv(.c) void;
+
 pub const Config = struct {
     grid_size: renderer.GridSize = .{},
     screen_size: renderer.ScreenSize = .{ .width = 1, .height = 1 },
+    /// Callback invoked when terminal input should be forwarded to the host.
+    write_fn: ?WriteFn = null,
+    write_userdata: ?*anyopaque = null,
 };
 
 grid_size: renderer.GridSize,
 screen_size: renderer.ScreenSize,
 io: ?*termio.Termio = null,
+write_fn: ?WriteFn = null,
+write_userdata: ?*anyopaque = null,
 
 pub fn init(alloc: Allocator, cfg: Config) !Manual {
     _ = alloc;
     return .{
         .grid_size = cfg.grid_size,
         .screen_size = cfg.screen_size,
+        .write_fn = cfg.write_fn,
+        .write_userdata = cfg.write_userdata,
     };
 }
 
@@ -81,13 +97,17 @@ pub fn queueWrite(
     data: []const u8,
     linefeed: bool,
 ) !void {
-    _ = self;
     _ = alloc;
     _ = td;
-    _ = data;
-    _ = linefeed;
-    // Input is handled by the host application, not echoed here.
-    // Output comes through ghostty_surface_write_output().
+    // Forward processed input to host application via callback.
+    // This is called when Ghostty processes keyboard input
+    // (ghostty_surface_text/key) and needs to send it downstream.
+    if (self.write_fn) |wfn| {
+        wfn(self.write_userdata, data.ptr, data.len);
+        if (linefeed) {
+            wfn(self.write_userdata, "\n", 1);
+        }
+    }
 }
 
 pub const ThreadData = struct {

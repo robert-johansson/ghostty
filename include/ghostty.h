@@ -437,6 +437,12 @@ typedef enum {
   GHOSTTY_SURFACE_CONTEXT_SPLIT = 2,
 } ghostty_surface_context_e;
 
+/// Callback for receiving processed terminal input from Ghostty.
+/// When keyboard input is processed via ghostty_surface_text/key,
+/// Ghostty calls this to forward the data to the host application
+/// (e.g., to write to a child process's stdin).
+typedef void (*ghostty_surface_write_cb)(void* userdata, const char* data, size_t len);
+
 typedef struct {
   ghostty_platform_e platform_tag;
   ghostty_platform_u platform;
@@ -450,6 +456,9 @@ typedef struct {
   const char* initial_input;
   bool wait_after_command;
   ghostty_surface_context_e context;
+  /// iOS Manual backend: callback for forwarding terminal input to host.
+  ghostty_surface_write_cb write_cb;
+  void* write_cb_userdata;
 } ghostty_surface_config_s;
 
 typedef struct {
@@ -1082,6 +1091,7 @@ bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
 bool ghostty_surface_process_exited(ghostty_surface_t);
 void ghostty_surface_refresh(ghostty_surface_t);
 void ghostty_surface_draw(ghostty_surface_t);
+void ghostty_surface_update_and_draw(ghostty_surface_t);
 void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
 void ghostty_surface_set_focus(ghostty_surface_t, bool);
 void ghostty_surface_set_occlusion(ghostty_surface_t, bool);
